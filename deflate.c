@@ -47,8 +47,6 @@
  *
  */
 
-/* @(#) $Id$ */
-
 #include "zbuild.h"
 #include "deflate.h"
 #include "deflate_p.h"
@@ -1554,7 +1552,7 @@ static block_state deflate_stored(deflate_state *s, int flush) {
  * deflate switches away from Z_RLE.)
  */
 static block_state deflate_rle(deflate_state *s, int flush) {
-    int bflush;                     /* set if current block must be flushed */
+    int bflush = 0;                 /* set if current block must be flushed */
     unsigned int prev;              /* byte at distance one to match */
     unsigned char *scan, *strend;   /* scan goes up to strend for length of run */
 
@@ -1596,7 +1594,7 @@ static block_state deflate_rle(deflate_state *s, int flush) {
         if (s->match_length >= MIN_MATCH) {
             check_match(s, s->strstart, s->strstart - 1, s->match_length);
 
-            zng_tr_tally_dist(s, 1, s->match_length - MIN_MATCH, bflush);
+            bflush = zng_tr_tally_dist(s, 1, s->match_length - MIN_MATCH);
 
             s->lookahead -= s->match_length;
             s->strstart += s->match_length;
@@ -1604,7 +1602,7 @@ static block_state deflate_rle(deflate_state *s, int flush) {
         } else {
             /* No match, output a literal byte */
             Tracevv((stderr, "%c", s->window[s->strstart]));
-            zng_tr_tally_lit(s, s->window[s->strstart], bflush);
+            bflush = zng_tr_tally_lit(s, s->window[s->strstart]);
             s->lookahead--;
             s->strstart++;
         }
@@ -1626,7 +1624,7 @@ static block_state deflate_rle(deflate_state *s, int flush) {
  * (It will be regenerated if this run of deflate switches away from Huffman.)
  */
 static block_state deflate_huff(deflate_state *s, int flush) {
-    int bflush;             /* set if current block must be flushed */
+    int bflush = 0;         /* set if current block must be flushed */
 
     for (;;) {
         /* Make sure that we have a literal to write. */
@@ -1642,7 +1640,7 @@ static block_state deflate_huff(deflate_state *s, int flush) {
         /* Output a literal byte */
         s->match_length = 0;
         Tracevv((stderr, "%c", s->window[s->strstart]));
-        zng_tr_tally_lit(s, s->window[s->strstart], bflush);
+        bflush = zng_tr_tally_lit(s, s->window[s->strstart]);
         s->lookahead--;
         s->strstart++;
         if (bflush)

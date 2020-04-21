@@ -115,12 +115,8 @@ add_feature_info(WITH_CODE_COVERAGE WITH_CODE_COVERAGE "Enable code coverage rep
 if (ZLIB_COMPAT)
     add_definitions(-DZLIB_COMPAT)
     set(WITH_GZFILEOP ON)
-    set(LIBNAME1 libz)
-    set(LIBNAME2 zlib)
     set(SUFFIX "")
 else()
-    set(LIBNAME1 libz-ng)
-    set(LIBNAME2 zlib-ng)
     set(SUFFIX "-ng")
 endif()
 
@@ -320,6 +316,7 @@ endif()
 if(WITH_SANITIZERS)
     set(_sanitize_flags
         address
+        alignment
         array-bounds
         bool
         bounds
@@ -365,8 +362,14 @@ if(WITH_SANITIZERS)
             set(CMAKE_REQUIRED_FLAGS)
         endif()
     endforeach()
-    if(NOT "${SANITIZERS_FLAGS}" STREQUAL "")
+
+    if(NOT ${SANITIZERS_FLAGS} STREQUAL "")
         set(SANITIZERS_FLAGS "-fsanitize=${SANITIZERS_FLAGS}")
+        # Group flag -fsanitize=undefined will automatically add alignment, even if it is not in our
+        # sanitize flag list, so we need to explicitly disable alignment sanitizing.
+        if(UNALIGNED_OK AND ${SANITIZERS_FLAGS} MATCHES "alignment")
+            set(SANITIZERS_FLAGS "${SANITIZERS_FLAGS} -fno-sanitize=alignment")
+        endif()
     endif()
 
     message(STATUS "Adding sanitizers flags: ${SANITIZERS_FLAGS}")
@@ -682,6 +685,7 @@ if(WITH_OPTIM)
     elseif(BASEARCH_S360_FOUND AND "${ARCH}" MATCHES "s390x")
         if(WITH_DFLTCC_DEFLATE OR WITH_DFLTCC_INFLATE)
             list(APPEND ZLIB_ARCH_SRCS ${ARCHDIR}/dfltcc_common.c)
+            add_definitions(-DGZBUFSIZE=262144)
         endif()
         if(WITH_DFLTCC_DEFLATE)
             add_definitions(-DS390_DFLTCC_DEFLATE)
@@ -739,12 +743,11 @@ if(NOT CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_CURRENT_BINARY_DIR)
     endif()
 endif()
 
-set(ZLIB_PC ${CMAKE_CURRENT_BINARY_DIR}/${LIBNAME2}.pc)
-configure_file( ${CMAKE_CURRENT_SOURCE_DIR}/zlib.pc.cmakein
+set(ZLIB_PC ${CMAKE_CURRENT_BINARY_DIR}/zlib${SUFFIX}.pc)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/zlib.pc.cmakein
     ${ZLIB_PC} @ONLY)
 configure_file(${CMAKE_CURRENT_BINARY_DIR}/zconf${SUFFIX}.h.cmakein
     ${CMAKE_CURRENT_BINARY_DIR}/zconf${SUFFIX}.h @ONLY)
-
 
 #============================================================================
 # zlib
@@ -844,6 +847,13 @@ foreach(ZLIB_INSTALL_LIBRARY ${ZLIB_INSTALL_LIBRARIES})
         ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
+if(WIN32)
+    set_target_properties(${ZLIB_INSTALL_LIBRARIES} PROPERTIES OUTPUT_NAME zlib${SUFFIX})
+else()
+    # On unix-like platforms the library is almost always called libz
+    set_target_properties(${ZLIB_INSTALL_LIBRARIES} PROPERTIES OUTPUT_NAME z${SUFFIX})
+endif()
+
 if(NOT DEFINED BUILD_SHARED_LIBS OR BUILD_SHARED_LIBS)
     set_target_properties(zlib PROPERTIES DEFINE_SYMBOL ZLIB_DLL)
     set_target_properties(zlib PROPERTIES SOVERSION 1)
@@ -866,11 +876,9 @@ if(NOT DEFINED BUILD_SHARED_LIBS OR BUILD_SHARED_LIBS)
     endif()
 
     if(UNIX)
-        # On unix-like platforms the library is almost always called libz
-        set_target_properties(${ZLIB_INSTALL_LIBRARIES} PROPERTIES OUTPUT_NAME z${SUFFIX})
         if(NOT APPLE)
             set_target_properties(zlib PROPERTIES LINK_FLAGS
-                "-Wl,--version-script,\"${CMAKE_CURRENT_SOURCE_DIR}/${LIBNAME2}.map\"")
+                "-Wl,--version-script,\"${CMAKE_CURRENT_SOURCE_DIR}/zlib${SUFFIX}.map\"")
         endif()
     elseif(MSYS)
         # Suppress version number from shared library name
@@ -908,7 +916,6 @@ option(ZLIB_ENABLE_TESTS "Build test binaries" ON)
 if (ZLIB_ENABLE_TESTS)
     enable_testing()
     macro(configure_test_executable target)
-        target_link_libraries(${target} zlib)
         target_include_directories(${target} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
         if(NOT WITH_GZFILEOP)
             target_compile_definitions(${target} PUBLIC -DWITH_GZFILEOP)
@@ -918,17 +925,31 @@ if (ZLIB_ENABLE_TESTS)
 
     add_executable(example test/example.c)
     configure_test_executable(example)
+    target_link_libraries(example zlib)
+
     set(EXAMPLE_COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:example>)
     add_test(NAME example COMMAND ${EXAMPLE_COMMAND})
 
     add_executable(minigzip test/minigzip.c)
     configure_test_executable(minigzip)
+    if(NOT DEFINED BUILD_SHARED_LIBS)
+        target_link_libraries(minigzip zlibstatic)
+    else()
+        target_link_libraries(minigzip zlib)
+    endif()
+    if(BASEARCH_S360_FOUND AND "${ARCH}" MATCHES "s390x")
+        if(WITH_DFLTCC_DEFLATE OR WITH_DFLTCC_INFLATE)
+            set_source_files_properties(test/minigzip.c PROPERTIES COMPILE_DEFINITIONS BUFLEN=262144)
+        endif()
+    endif()
 
     add_executable(switchlevels test/switchlevels.c)
     configure_test_executable(switchlevels)
+    target_link_libraries(switchlevels zlib)
 
     add_executable(infcover test/infcover.c inftrees.c)
     configure_test_executable(infcover)
+    target_link_libraries(infcover zlib)
 
     add_executable(makefixed tools/makefixed.c inftrees.c)
     target_include_directories(makefixed PUBLIC ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
@@ -942,12 +963,18 @@ if (ZLIB_ENABLE_TESTS)
     if(HAVE_OFF64_T)
         add_executable(example64 test/example.c)
         configure_test_executable(example64)
+        target_link_libraries(example64 zlib)
         set_target_properties(example64 PROPERTIES COMPILE_FLAGS "-D_FILE_OFFSET_BITS=64")
         set(EXAMPLE64_COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:example64>)
         add_test(NAME example64 COMMAND ${EXAMPLE64_COMMAND})
 
         add_executable(minigzip64 test/minigzip.c)
         configure_test_executable(minigzip64)
+        if(NOT DEFINED BUILD_SHARED_LIBS)
+            target_link_libraries(minigzip64 zlibstatic)
+        else()
+            target_link_libraries(minigzip64 zlib)
+        endif()
         set_target_properties(minigzip64 PROPERTIES COMPILE_FLAGS "-D_FILE_OFFSET_BITS=64")
     endif()
 
@@ -957,6 +984,7 @@ if (ZLIB_ENABLE_TESTS)
         foreach(FUZZER ${FUZZERS})
             add_executable(${FUZZER}_fuzzer test/fuzz/${FUZZER}_fuzzer.c test/fuzz/standalone_fuzz_target_runner.c)
             configure_test_executable(${FUZZER}_fuzzer)
+            target_link_libraries(${FUZZER}_fuzzer zlib)
             set(FUZZER_COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:${FUZZER}_fuzzer> ${ALL_SRC_FILES})
             add_test(NAME ${FUZZER}_fuzzer COMMAND ${FUZZER_COMMAND})
         endforeach()
@@ -1002,6 +1030,7 @@ if (ZLIB_ENABLE_TESTS)
         endforeach()
         string(REPLACE ";" "" GZ_ARGS "${ARGN}")
         string(REPLACE "-" "" GZ_ARGS "${GZ_ARGS}")
+        # Test minigzip can decompress minigzip compressed
         add_test(NAME ${target}-${name}-${GZ_ARGS}-compr
             COMMAND ${CMAKE_COMMAND}
             "-DCOMMAND=${GZ_COMMAND}"
@@ -1018,9 +1047,49 @@ if (ZLIB_ENABLE_TESTS)
             "-DSUCCESS_EXIT=0;1"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run-and-redirect.cmake)
         add_test(NAME ${target}-${name}-${GZ_ARGS}-cmp
-            COMMAND ${CMAKE_COMMAND} -E compare_files
-                ${CMAKE_CURRENT_SOURCE_DIR}/${path}
-                ${CMAKE_CURRENT_SOURCE_DIR}/${path}.out)
+        COMMAND ${CMAKE_COMMAND} -E compare_files
+            ${CMAKE_CURRENT_SOURCE_DIR}/${path}
+            ${CMAKE_CURRENT_SOURCE_DIR}/${path}.out)
+        if(NOT "${ARGN}" MATCHES "-T")
+            # Transparent writing does not use gzip format
+            find_program(GZIP gzip)
+            if(GZIP)
+                # Test gzip can decompress minigzip compressed
+                set(GZ_COMMAND ${GZIP} --decompress)
+                add_test(NAME ${target}-${name}-${GZ_ARGS}-gzip-uncompr
+                    COMMAND ${CMAKE_COMMAND}
+                    "-DCOMMAND=${GZ_COMMAND}"
+                    -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/${path}.gz
+                    -DOUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/${path}.gzip.out
+                    "-DSUCCESS_EXIT=0;1"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run-and-redirect.cmake)
+                add_test(NAME ${target}-${name}-${GZ_ARGS}-gzip-uncompr-cmp
+                    COMMAND ${CMAKE_COMMAND} -E compare_files
+                        ${CMAKE_CURRENT_SOURCE_DIR}/${path}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/${path}.gzip.out)
+                # Test minigzip can decompress gzip compressed
+                set(GZ_COMMAND ${GZIP} --stdout)
+                add_test(NAME ${target}-${name}-${GZ_ARGS}-gzip-compr
+                    COMMAND ${CMAKE_COMMAND}
+                    "-DCOMMAND=${GZ_COMMAND}"
+                    -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/${path}
+                    -DOUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/${path}.gzip.gz
+                    "-DSUCCESS_EXIT=0;1"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run-and-redirect.cmake)
+                set(GZ_COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:${target}> -d)
+                add_test(NAME ${target}-${name}-${GZ_ARGS}-minigzip-uncompr
+                    COMMAND ${CMAKE_COMMAND}
+                    "-DCOMMAND=${GZ_COMMAND}"
+                    -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/${path}.gzip.gz
+                    -DOUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/${path}.gzip.out
+                    "-DSUCCESS_EXIT=0;1"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run-and-redirect.cmake)
+                add_test(NAME ${target}-${name}-${GZ_ARGS}-minigzip-cmp
+                    COMMAND ${CMAKE_COMMAND} -E compare_files
+                        ${CMAKE_CURRENT_SOURCE_DIR}/${path}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/${path}.gzip.out)
+            endif()
+        endif()
     endmacro()
 
     set(OPEN_MODES -f -h -R -F -T)
@@ -1084,7 +1153,7 @@ if (ZLIB_ENABLE_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}/crc32._h)
 
     set(INFCOVER_COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:infcover>)
-    add_test(NAME infcover COMMAND ${CMAKE_COMMAND})
+    add_test(NAME infcover COMMAND ${INFCOVER_COMMAND})
 
     set(GH_361_COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:minigzip> -4)
     add_test(NAME GH-361
@@ -1098,6 +1167,13 @@ if (ZLIB_ENABLE_TESTS)
             COMMAND ${CMAKE_COMMAND}
             "-DCOMMAND=${GH_364_COMMAND}"
             -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/test/GH-364/test.bin
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run-and-redirect.cmake)
+
+    set(GH_536_COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:switchlevels> 6 9744 1 91207)
+    add_test(NAME GH-536-segfault
+            COMMAND ${CMAKE_COMMAND}
+            "-DCOMMAND=${GH_536_COMMAND}"
+            -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/test/data/lcet10.txt
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run-and-redirect.cmake)
 endif()
 

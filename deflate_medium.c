@@ -7,6 +7,7 @@
  * For conditions of distribution and use, see copyright notice in zlib.h
  */
 #ifndef NO_MEDIUM_STRATEGY
+#include <stdint.h>
 #include "zbuild.h"
 #include "deflate.h"
 #include "deflate_p.h"
@@ -14,44 +15,36 @@
 #include "functable.h"
 
 struct match {
-    unsigned int match_start;
-    unsigned int match_length;
-    unsigned int strstart;
-    unsigned int orgstart;
+    uint16_t match_start;
+    uint16_t match_length;
+    uint16_t strstart;
+    uint16_t orgstart;
 };
 
-static int tr_tally_dist(deflate_state *s, int distance, int length) {
-    return zng_tr_tally(s, distance, length);
-}
-
-static int tr_tally_lit(deflate_state *s, int c) {
-    return zng_tr_tally(s, 0, c);
-}
-
 static int emit_match(deflate_state *s, struct match match) {
-    int flush = 0;
+    int bflush = 0;
 
     /* matches that are not long enough we need to emit as literals */
     if (match.match_length < MIN_MATCH) {
         while (match.match_length) {
-            flush += tr_tally_lit(s, s->window[match.strstart]);
+            bflush += zng_tr_tally_lit(s, s->window[match.strstart]);
             s->lookahead--;
             match.strstart++;
             match.match_length--;
         }
-        return flush;
+        return bflush;
     }
 
     check_match(s, match.strstart, match.match_start, match.match_length);
 
-    flush += tr_tally_dist(s, match.strstart - match.match_start, match.match_length - MIN_MATCH);
+    bflush += zng_tr_tally_dist(s, match.strstart - match.match_start, match.match_length - MIN_MATCH);
 
     s->lookahead -= match.match_length;
-    return flush;
+    return bflush;
 }
 
 static void insert_match(deflate_state *s, struct match match) {
-    if (UNLIKELY(s->lookahead <= match.match_length + MIN_MATCH))
+    if (UNLIKELY(s->lookahead <= (unsigned int)(match.match_length + MIN_MATCH)))
         return;
 
     /* matches that are not long enough we need to emit as literals */
@@ -197,14 +190,16 @@ static void fizzle_matches(deflate_state *s, struct match *current, struct match
 }
 
 ZLIB_INTERNAL block_state deflate_medium(deflate_state *s, int flush) {
-    struct match current_match, next_match;
+    /* Align the first struct to start on a new cacheline, this allows us to fit both structs in one cacheline */
+    ALIGNED_(16) struct match current_match;
+                 struct match next_match;
 
     memset(&current_match, 0, sizeof(struct match));
     memset(&next_match, 0, sizeof(struct match));
 
     for (;;) {
         IPos hash_head = 0;   /* head of the hash chain */
-        int bflush;           /* set if current block must be flushed */
+        int bflush = 0;       /* set if current block must be flushed */
 
         /* Make sure that we always have enough lookahead, except
          * at the end of the input file. We need MAX_MATCH bytes
@@ -266,7 +261,7 @@ ZLIB_INTERNAL block_state deflate_medium(deflate_state *s, int flush) {
         insert_match(s, current_match);
 
         /* now, look ahead one */
-        if (s->lookahead > MIN_LOOKAHEAD && (current_match.strstart + current_match.match_length) < (s->window_size - MIN_LOOKAHEAD)) {
+        if (s->lookahead > MIN_LOOKAHEAD && (uint32_t)(current_match.strstart + current_match.match_length) < (s->window_size - MIN_LOOKAHEAD)) {
             s->strstart = current_match.strstart + current_match.match_length;
             hash_head = functable.insert_string(s, s->strstart, 1);
 
@@ -297,6 +292,7 @@ ZLIB_INTERNAL block_state deflate_medium(deflate_state *s, int flush) {
             }
 
             /* short matches with a very long distance are rarely a good idea encoding wise */
+            /* distances 8193–16384 take 12 extra bits, distances 16385–32768 take 13 extra bits */
             if (next_match.match_length == 3 && (next_match.strstart - next_match.match_start) > 12000)
                     next_match.match_length = 1;
             s->strstart = current_match.strstart;
